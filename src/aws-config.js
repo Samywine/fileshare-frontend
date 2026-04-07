@@ -15,7 +15,9 @@ const awsConfig = {
       defaultAuthMode: "userPool"
     }
   },
-  libraryOptions: {
+
+  // ✅ This is the fixed corrected name Amplify now requires
+  options: {
     graphql: {
       headers: {
         'Accept': 'application/json',
