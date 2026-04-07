@@ -1,6 +1,35 @@
 import React, { useEffect, useState } from 'react';
-import { API, Auth, graphqlOperation } from 'aws-amplify';
+import { Auth } from 'aws-amplify';
 import { v4 as uuidv4 } from 'uuid';
+import awsConfig from './aws-config';
+
+const GRAPHQL_ENDPOINT = awsConfig.aws_appsync_graphqlEndpoint;
+
+async function graphqlRequest(query, variables = {}) {
+  const session = await Auth.currentSession();
+  const token = session.getIdToken().getJwtToken();
+
+  const response = await fetch(GRAPHQL_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: token
+    },
+    body: JSON.stringify({
+      query,
+      variables
+    })
+  });
+
+  const result = await response.json();
+
+  if (result.errors) {
+    console.error('GraphQL errors:', result.errors);
+    throw new Error(result.errors[0].message || 'GraphQL request failed');
+  }
+
+  return result.data;
+}
 
 function App() {
   const [mode, setMode] = useState('signin');
@@ -74,7 +103,7 @@ function App() {
 
   const loadFiles = async () => {
     try {
-      const result = await API.graphql(graphqlOperation(`
+      const data = await graphqlRequest(`
         query ListFiles {
           listFiles {
             fileId
@@ -83,9 +112,9 @@ function App() {
             owner
           }
         }
-      `));
+      `);
 
-      setFiles(result.data.listFiles || []);
+      setFiles(data.listFiles || []);
     } catch (err) {
       console.error("Load files error:", err);
     }
@@ -98,7 +127,7 @@ function App() {
     }
 
     try {
-      const uploadResult = await API.graphql(graphqlOperation(`
+      const data = await graphqlRequest(`
         mutation GetUploadUrl($fileName: String!, $fileType: String!) {
           getUploadUrl(fileName: $fileName, fileType: $fileType) {
             uploadURL
@@ -108,9 +137,9 @@ function App() {
       `, {
         fileName: selectedFile.name,
         fileType: selectedFile.type || "application/octet-stream"
-      }));
+      });
 
-      const { uploadURL, key } = uploadResult.data.getUploadUrl;
+      const { uploadURL, key } = data.getUploadUrl;
 
       const s3UploadResponse = await fetch(uploadURL, {
         method: 'PUT',
@@ -124,7 +153,7 @@ function App() {
         throw new Error("S3 upload failed");
       }
 
-      await API.graphql(graphqlOperation(`
+      await graphqlRequest(`
         mutation CreateFileRecord(
           $fileId: ID!,
           $fileName: String!,
@@ -158,7 +187,7 @@ function App() {
         version: 1,
         owner: user.username,
         sharedWith: []
-      }));
+      });
 
       alert("✅ File uploaded successfully!");
       loadFiles();
@@ -170,7 +199,7 @@ function App() {
 
   const loadComments = async (fileId) => {
     try {
-      const result = await API.graphql(graphqlOperation(`
+      const data = await graphqlRequest(`
         query GetComments($fileId: ID!) {
           getComments(fileId: $fileId) {
             commentId
@@ -179,11 +208,11 @@ function App() {
             createdAt
           }
         }
-      `, { fileId }));
+      `, { fileId });
 
       setComments((prev) => ({
         ...prev,
-        [fileId]: result.data.getComments || []
+        [fileId]: data.getComments || []
       }));
     } catch (err) {
       console.error(err);
@@ -198,7 +227,7 @@ function App() {
     }
 
     try {
-      await API.graphql(graphqlOperation(`
+      await graphqlRequest(`
         mutation CreateComment(
           $commentId: ID!,
           $fileId: ID!,
@@ -219,7 +248,7 @@ function App() {
         fileId,
         content,
         owner: user.username
-      }));
+      });
 
       setCommentInputs((prev) => ({
         ...prev,
@@ -259,16 +288,12 @@ function App() {
             {mode === 'signin' ? (
               <>
                 <button onClick={signIn}>Sign In</button>
-                <p>
-                  No account? <button onClick={() => setMode('signup')}>Create one</button>
-                </p>
+                <p>No account? <button onClick={() => setMode('signup')}>Create one</button></p>
               </>
             ) : (
               <>
                 <button onClick={signUp}>Create Account</button>
-                <p>
-                  Already have an account? <button onClick={() => setMode('signin')}>Sign in</button>
-                </p>
+                <p>Already have an account? <button onClick={() => setMode('signin')}>Sign in</button></p>
               </>
             )}
           </>
@@ -297,9 +322,7 @@ function App() {
       <div style={{ marginTop: '20px', marginBottom: '30px' }}>
         <h2>Upload New File</h2>
         <input type="file" onChange={(e) => setSelectedFile(e.target.files[0])} />
-        <button onClick={uploadFile} style={{ marginLeft: '10px' }}>
-          Upload File
-        </button>
+        <button onClick={uploadFile} style={{ marginLeft: '10px' }}>Upload File</button>
       </div>
 
       <div>
