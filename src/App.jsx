@@ -1,10 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Authenticator } from '@aws-amplify/ui-react';
-import { generateClient } from 'aws-amplify/api';
-import { getCurrentUser } from 'aws-amplify/auth';
+import { API, Auth } from 'aws-amplify';
 import { v4 as uuidv4 } from 'uuid';
-
-const client = generateClient();
 
 function MainApp() {
   const [user, setUser] = useState(null);
@@ -19,13 +16,17 @@ function MainApp() {
   }, []);
 
   const loadUser = async () => {
-    const currentUser = await getCurrentUser();
-    setUser(currentUser);
+    try {
+      const currentUser = await Auth.currentAuthenticatedUser();
+      setUser(currentUser);
+    } catch (err) {
+      console.error("User load error:", err);
+    }
   };
 
   const loadFiles = async () => {
     try {
-      const result = await client.graphql({
+      const result = await API.graphql({
         query: `query ListFiles { listFiles { fileId fileName version owner } }`
       });
       setFiles(result.data.listFiles || []);
@@ -39,7 +40,7 @@ function MainApp() {
     alert("Upload starting, please wait...");
 
     try {
-      const uploadResult = await client.graphql({
+      const uploadResult = await API.graphql({
         query: `mutation GetUploadUrl($fileName: String!, $fileType: String!) {
           getUploadUrl(fileName: $fileName, fileType: $fileType) {
             uploadURL
@@ -48,21 +49,25 @@ function MainApp() {
         }`,
         variables: {
           fileName: selectedFile.name,
-          fileType: selectedFile.type
+          fileType: selectedFile.type || "application/octet-stream"
         }
       });
 
       const { uploadURL, key } = uploadResult.data.getUploadUrl;
 
-      await fetch(uploadURL, {
+      const uploadResponse = await fetch(uploadURL, {
         method: 'PUT',
         headers: {
-          'Content-Type': selectedFile.type
+          'Content-Type': selectedFile.type || "application/octet-stream"
         },
         body: selectedFile
       });
 
-      await client.graphql({
+      if (!uploadResponse.ok) {
+        throw new Error("S3 upload failed");
+      }
+
+      await API.graphql({
         query: `mutation CreateFile($input: FileRecordInput!) {
           createFileRecord(input: $input) {
             fileId
@@ -74,7 +79,7 @@ function MainApp() {
             fileId: uuidv4(),
             fileName: selectedFile.name,
             s3Key: key,
-            fileType: selectedFile.type,
+            fileType: selectedFile.type || "application/octet-stream",
             fileSize: selectedFile.size,
             version: 1,
             owner: user.username,
@@ -95,10 +100,11 @@ function MainApp() {
 
   const loadComments = async (fileId) => {
     try {
-      const result = await client.graphql({
+      const result = await API.graphql({
         query: `query GetComments($fileId: ID!) { getComments(fileId: $fileId) { commentId content owner createdAt } }`,
         variables: { fileId }
       });
+
       setComments(prev => ({
         ...prev,
         [fileId]: result.data.getComments || []
