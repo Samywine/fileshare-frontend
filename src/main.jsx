@@ -4,7 +4,6 @@ import { Amplify } from 'aws-amplify';
 import App from './App';
 import awsConfig from './aws-config';
 import '@aws-amplify/ui-react/styles.css';
-import './index.css';
 
 Amplify.configure(awsConfig);
 
