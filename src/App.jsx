@@ -24,62 +24,88 @@ function MainApp() {
   };
 
   const loadFiles = async () => {
-    const result = await client.graphql({
-      query: `query ListFiles { listFiles { fileId fileName version owner } }`
-    });
-    setFiles(result.data.listFiles || []);
+    try {
+      const result = await client.graphql({
+        query: `query ListFiles { listFiles { fileId fileName version owner } }`
+      });
+      setFiles(result.data.listFiles || []);
+    } catch (err) {
+      console.error("Load files error:", err);
+    }
   };
 
   const uploadFile = async () => {
     if (!selectedFile || !user) return;
+    alert("Upload starting, please wait...");
 
-    const uploadResult = await client.graphql({
-      query: `mutation GetUploadUrl($fileName: String!, $fileType: String!) {
-        getUploadUrl(fileName: $fileName, fileType: $fileType) {
-          uploadURL
-          key
-        }
-      }`,
-      variables: {
-        fileName: selectedFile.name,
-        fileType: selectedFile.type
-      }
-    });
-
-    const { uploadURL, key } = uploadResult.data.getUploadUrl;
-
-    await fetch(uploadURL, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': selectedFile.type
-      },
-      body: selectedFile
-    });
-
-    await client.graphql({
-      query: `mutation CreateFile($input: FileRecordInput!) {
-        createFileRecord(input: $input) {
-          fileId
-          fileName
-        }
-      }`,
-      variables: {
-        input: {
-          fileId: uuidv4(),
+    try {
+      const uploadResult = await client.graphql({
+        query: `mutation GetUploadUrl($fileName: String!, $fileType: String!) {
+          getUploadUrl(fileName: $fileName, fileType: $fileType) {
+            uploadURL
+            key
+          }
+        }`,
+        variables: {
           fileName: selectedFile.name,
-          s3Key: key,
-          fileType: selectedFile.type,
-          fileSize: selectedFile.size,
-          version: 1,
-          owner: user.username,
-          sharedWith: []
+          fileType: selectedFile.type
         }
-      }
-    });
+      });
 
-    alert('✅ File uploaded successfully!');
-    setSelectedFile(null);
-    loadFiles();
+      const { uploadURL, key } = uploadResult.data.getUploadUrl;
+
+      await fetch(uploadURL, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': selectedFile.type
+        },
+        body: selectedFile
+      });
+
+      await client.graphql({
+        query: `mutation CreateFile($input: FileRecordInput!) {
+          createFileRecord(input: $input) {
+            fileId
+            fileName
+          }
+        }`,
+        variables: {
+          input: {
+            fileId: uuidv4(),
+            fileName: selectedFile.name,
+            s3Key: key,
+            fileType: selectedFile.type,
+            fileSize: selectedFile.size,
+            version: 1,
+            owner: user.username,
+            sharedWith: []
+          }
+        }
+      });
+
+      alert('✅ File uploaded successfully!');
+      setSelectedFile(null);
+      loadFiles();
+
+    } catch (err) {
+      console.error("Upload failed:", err);
+      alert("❌ Upload failed, please try again");
+    }
+  };
+
+  const loadComments = async (fileId) => {
+    try {
+      const result = await client.graphql({
+        query: `query GetComments($fileId: ID!) { getComments(fileId: $fileId) { commentId content owner createdAt } }`,
+        variables: { fileId }
+      });
+      setComments(prev => ({
+        ...prev,
+        [fileId]: result.data.getComments || []
+      }));
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   return (
@@ -99,6 +125,31 @@ function MainApp() {
             <p><strong>Name:</strong> {file.fileName}</p>
             <p><strong>Owner:</strong> {file.owner}</p>
             <p><strong>Version:</strong> {file.version}</p>
+
+            <div className="row">
+              <button onClick={() => loadComments(file.fileId)}>Load Comments</button>
+            </div>
+
+            <div className="row">
+              <input
+                type="text"
+                placeholder="Write comment"
+                value={commentInputs[file.fileId] || ''}
+                onChange={(e) =>
+                  setCommentInputs(prev => ({ ...prev, [file.fileId]: e.target.value }))
+                }
+              />
+              <button>Add Comment</button>
+            </div>
+
+            <div className="commentsBox">
+              <strong>Comments:</strong>
+              {(comments[file.fileId] || []).map((c) => (
+                <div key={c.commentId}>
+                  {c.owner}: {c.content}
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>
