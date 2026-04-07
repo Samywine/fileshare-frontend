@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@aws-amplify/ui-react": "^6.15.2",
-    "aws-amplify": "^6.16.3",
+    "aws-amplify": "^5.3.33",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "uuid": "^13.0.0"
