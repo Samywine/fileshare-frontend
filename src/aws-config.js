@@ -14,6 +14,14 @@ const awsConfig = {
       region: "us-east-1",
       defaultAuthMode: "userPool"
     }
+  },
+  libraryOptions: {
+    graphql: {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    }
   }
 };
 
