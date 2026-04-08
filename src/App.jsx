@@ -39,27 +39,30 @@ function App() {
     }
   }, []);
 
-  const graphqlRequest = async (query, variables = {}, token = jwtToken) => {
+  async function graphqlRequest(query, variables = {}, token = jwtToken) {
     const response = await fetch(awsConfig.graphqlEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: token
       },
-      body: JSON.stringify({ query, variables })
+      body: JSON.stringify({
+        query,
+        variables
+      })
     });
 
     const result = await response.json();
 
     if (result.errors) {
-      console.error(result.errors);
+      console.error('GraphQL errors:', result.errors);
       throw new Error(result.errors[0].message || 'GraphQL request failed');
     }
 
     return result.data;
-  };
+  }
 
-  const signUp = async () => {
+  const signUp = () => {
     const attributeList = [
       new CognitoUserAttribute({
         Name: 'email',
@@ -79,7 +82,7 @@ function App() {
     });
   };
 
-  const confirmSignUp = async () => {
+  const confirmSignUp = () => {
     const cognitoUser = new CognitoUser({
       Username: email,
       Pool: userPool
@@ -98,7 +101,7 @@ function App() {
     });
   };
 
-  const signIn = async () => {
+  const signIn = () => {
     const authenticationDetails = new AuthenticationDetails({
       Username: email,
       Password: password
@@ -129,6 +132,7 @@ function App() {
     setUser(null);
     setJwtToken('');
     setFiles([]);
+    setComments({});
   };
 
   const loadFiles = async (token = jwtToken) => {
@@ -140,6 +144,11 @@ function App() {
             fileName
             version
             owner
+            fileType
+            fileSize
+            s3Key
+            createdAt
+            updatedAt
           }
         }
       `, {}, token);
@@ -157,7 +166,8 @@ function App() {
     }
 
     try {
-      const data = await graphqlRequest(`
+      // 1. Get pre-signed upload URL from AppSync -> Lambda
+      const uploadData = await graphqlRequest(`
         mutation GetUploadUrl($fileName: String!, $fileType: String!) {
           getUploadUrl(fileName: $fileName, fileType: $fileType) {
             uploadURL
@@ -169,8 +179,9 @@ function App() {
         fileType: selectedFile.type || "application/octet-stream"
       });
 
-      const { uploadURL, key } = data.getUploadUrl;
+      const { uploadURL, key } = uploadData.getUploadUrl;
 
+      // 2. Upload directly to S3
       const s3UploadResponse = await fetch(uploadURL, {
         method: 'PUT',
         headers: {
@@ -183,43 +194,38 @@ function App() {
         throw new Error("S3 upload failed");
       }
 
+      // 3. Save metadata in DynamoDB via AppSync
       await graphqlRequest(`
         mutation CreateFileRecord(
-          $fileId: ID!,
           $fileName: String!,
-          $s3Key: String!,
-          $fileType: String,
           $fileSize: Int,
-          $version: Int!,
-          $owner: String!,
-          $sharedWith: [String]
+          $fileType: String,
+          $s3Key: String!,
+          $version: Int!
         ) {
           createFileRecord(
-            fileId: $fileId,
             fileName: $fileName,
-            s3Key: $s3Key,
-            fileType: $fileType,
             fileSize: $fileSize,
-            version: $version,
-            owner: $owner,
-            sharedWith: $sharedWith
+            fileType: $fileType,
+            s3Key: $s3Key,
+            version: $version
           ) {
             fileId
             fileName
+            owner
+            version
           }
         }
       `, {
-        fileId: uuidv4(),
         fileName: selectedFile.name,
-        s3Key: key,
-        fileType: selectedFile.type || "application/octet-stream",
         fileSize: selectedFile.size,
-        version: 1,
-        owner: email,
-        sharedWith: []
+        fileType: selectedFile.type || "application/octet-stream",
+        s3Key: key,
+        version: 1
       });
 
       alert("✅ File uploaded successfully!");
+      setSelectedFile(null);
       loadFiles();
     } catch (err) {
       console.error("Upload failed:", err);
@@ -234,8 +240,9 @@ function App() {
           getComments(fileId: $fileId) {
             commentId
             content
-            owner
             createdAt
+            fileId
+            owner
           }
         }
       `, { fileId });
@@ -245,12 +252,13 @@ function App() {
         [fileId]: data.getComments || []
       }));
     } catch (err) {
-      console.error(err);
+      console.error("Load comments error:", err);
     }
   };
 
   const addComment = async (fileId) => {
     const content = commentInputs[fileId];
+
     if (!content || !content.trim()) {
       alert("Please type a comment");
       return;
@@ -258,26 +266,18 @@ function App() {
 
     try {
       await graphqlRequest(`
-        mutation CreateComment(
-          $commentId: ID!,
-          $fileId: ID!,
-          $content: String!,
-          $owner: String!
-        ) {
-          createComment(
-            commentId: $commentId,
-            fileId: $fileId,
-            content: $content,
-            owner: $owner
-          ) {
+        mutation CreateComment($content: String!, $fileId: ID!) {
+          createComment(content: $content, fileId: $fileId) {
             commentId
+            content
+            owner
+            createdAt
+            fileId
           }
         }
       `, {
-        commentId: uuidv4(),
-        fileId,
         content,
-        owner: email
+        fileId
       });
 
       setCommentInputs((prev) => ({
@@ -287,7 +287,7 @@ function App() {
 
       loadComments(fileId);
     } catch (err) {
-      console.error(err);
+      console.error("Comment failed:", err);
       alert("❌ Comment failed");
     }
   };
@@ -300,6 +300,7 @@ function App() {
         {!pendingConfirm ? (
           <>
             <h2>{mode === 'signin' ? 'Sign In' : 'Create Account'}</h2>
+
             <input
               type="email"
               placeholder="Email"
@@ -307,6 +308,7 @@ function App() {
               onChange={(e) => setEmail(e.target.value)}
               style={{ display: 'block', marginBottom: '10px', padding: '8px', width: '300px' }}
             />
+
             <input
               type="password"
               placeholder="Password"
@@ -318,18 +320,25 @@ function App() {
             {mode === 'signin' ? (
               <>
                 <button onClick={signIn}>Sign In</button>
-                <p>No account? <button onClick={() => setMode('signup')}>Create one</button></p>
+                <p>
+                  No account?{' '}
+                  <button onClick={() => setMode('signup')}>Create one</button>
+                </p>
               </>
             ) : (
               <>
                 <button onClick={signUp}>Create Account</button>
-                <p>Already have an account? <button onClick={() => setMode('signin')}>Sign in</button></p>
+                <p>
+                  Already have an account?{' '}
+                  <button onClick={() => setMode('signin')}>Sign in</button>
+                </p>
               </>
             )}
           </>
         ) : (
           <>
             <h2>Confirm Account</h2>
+
             <input
               type="text"
               placeholder="Confirmation code"
@@ -337,6 +346,7 @@ function App() {
               onChange={(e) => setConfirmCode(e.target.value)}
               style={{ display: 'block', marginBottom: '10px', padding: '8px', width: '300px' }}
             />
+
             <button onClick={confirmSignUp}>Confirm</button>
           </>
         )}
@@ -347,25 +357,39 @@ function App() {
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial' }}>
       <h1>Serverless File Sharing Platform</h1>
+
       <button onClick={signOut}>Sign Out</button>
 
       <div style={{ marginTop: '20px', marginBottom: '30px' }}>
         <h2>Upload New File</h2>
         <input type="file" onChange={(e) => setSelectedFile(e.target.files[0])} />
-        <button onClick={uploadFile} style={{ marginLeft: '10px' }}>Upload File</button>
+        <button onClick={uploadFile} style={{ marginLeft: '10px' }}>
+          Upload File
+        </button>
       </div>
 
       <div>
         <h2>Your Files</h2>
+
         {files.length === 0 && <p>No files uploaded yet.</p>}
 
         {files.map((file) => (
-          <div key={file.fileId} style={{ border: '1px solid #ccc', padding: '12px', marginBottom: '15px' }}>
+          <div
+            key={file.fileId}
+            style={{
+              border: '1px solid #ccc',
+              padding: '12px',
+              marginBottom: '15px',
+              borderRadius: '8px'
+            }}
+          >
             <p><strong>Name:</strong> {file.fileName}</p>
             <p><strong>Owner:</strong> {file.owner}</p>
             <p><strong>Version:</strong> {file.version}</p>
 
-            <button onClick={() => loadComments(file.fileId)}>Load Comments</button>
+            <button onClick={() => loadComments(file.fileId)}>
+              Load Comments
+            </button>
 
             <div style={{ marginTop: '10px' }}>
               <input
@@ -379,18 +403,25 @@ function App() {
                   }))
                 }
               />
-              <button onClick={() => addComment(file.fileId)} style={{ marginLeft: '10px' }}>
+              <button
+                onClick={() => addComment(file.fileId)}
+                style={{ marginLeft: '10px' }}
+              >
                 Add Comment
               </button>
             </div>
 
             <div style={{ marginTop: '10px' }}>
               <strong>Comments:</strong>
-              {(comments[file.fileId] || []).map((comment) => (
-                <div key={comment.commentId}>
-                  {comment.owner}: {comment.content}
-                </div>
-              ))}
+              {(comments[file.fileId] || []).length === 0 ? (
+                <p>No comments yet.</p>
+              ) : (
+                (comments[file.fileId] || []).map((comment) => (
+                  <div key={comment.commentId}>
+                    {comment.owner}: {comment.content}
+                  </div>
+                ))
+              )}
             </div>
           </div>
         ))}
