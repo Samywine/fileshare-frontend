@@ -1,35 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Auth } from 'aws-amplify';
+import {
+  CognitoUserPool,
+  CognitoUser,
+  AuthenticationDetails,
+  CognitoUserAttribute
+} from 'amazon-cognito-identity-js';
 import { v4 as uuidv4 } from 'uuid';
 import awsConfig from './aws-config';
 
-const GRAPHQL_ENDPOINT = awsConfig.aws_appsync_graphqlEndpoint;
-
-async function graphqlRequest(query, variables = {}) {
-  const session = await Auth.currentSession();
-  const token = session.getIdToken().getJwtToken();
-
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: token
-    },
-    body: JSON.stringify({
-      query,
-      variables
-    })
-  });
-
-  const result = await response.json();
-
-  if (result.errors) {
-    console.error('GraphQL errors:', result.errors);
-    throw new Error(result.errors[0].message || 'GraphQL request failed');
-  }
-
-  return result.data;
-}
+const userPool = new CognitoUserPool({
+  UserPoolId: awsConfig.userPoolId,
+  ClientId: awsConfig.userPoolClientId
+});
 
 function App() {
   const [mode, setMode] = useState('signin');
@@ -37,6 +19,7 @@ function App() {
   const [password, setPassword] = useState('');
   const [confirmCode, setConfirmCode] = useState('');
   const [user, setUser] = useState(null);
+  const [jwtToken, setJwtToken] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [files, setFiles] = useState([]);
   const [comments, setComments] = useState({});
@@ -44,64 +27,111 @@ function App() {
   const [pendingConfirm, setPendingConfirm] = useState(false);
 
   useEffect(() => {
-    checkUser();
+    const currentUser = userPool.getCurrentUser();
+    if (currentUser) {
+      currentUser.getSession((err, session) => {
+        if (!err && session.isValid()) {
+          setUser(currentUser);
+          setJwtToken(session.getIdToken().getJwtToken());
+          loadFiles(session.getIdToken().getJwtToken());
+        }
+      });
+    }
   }, []);
 
-  const checkUser = async () => {
-    try {
-      const currentUser = await Auth.currentAuthenticatedUser();
-      setUser(currentUser);
-      loadFiles();
-    } catch {
-      setUser(null);
+  const graphqlRequest = async (query, variables = {}, token = jwtToken) => {
+    const response = await fetch(awsConfig.graphqlEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token
+      },
+      body: JSON.stringify({ query, variables })
+    });
+
+    const result = await response.json();
+
+    if (result.errors) {
+      console.error(result.errors);
+      throw new Error(result.errors[0].message || 'GraphQL request failed');
     }
+
+    return result.data;
   };
 
   const signUp = async () => {
-    try {
-      await Auth.signUp({
-        username: email,
-        password,
-        attributes: { email }
-      });
+    const attributeList = [
+      new CognitoUserAttribute({
+        Name: 'email',
+        Value: email
+      })
+    ];
+
+    userPool.signUp(email, password, attributeList, null, (err, result) => {
+      if (err) {
+        console.error(err);
+        alert(err.message || 'Signup failed');
+        return;
+      }
+
       alert('✅ Account created. Check your email for confirmation code.');
       setPendingConfirm(true);
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Signup failed');
-    }
+    });
   };
 
   const confirmSignUp = async () => {
-    try {
-      await Auth.confirmSignUp(email, confirmCode);
+    const cognitoUser = new CognitoUser({
+      Username: email,
+      Pool: userPool
+    });
+
+    cognitoUser.confirmRegistration(confirmCode, true, (err, result) => {
+      if (err) {
+        console.error(err);
+        alert(err.message || 'Confirmation failed');
+        return;
+      }
+
       alert('✅ Account confirmed. Now sign in.');
       setPendingConfirm(false);
       setMode('signin');
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Confirmation failed');
-    }
+    });
   };
 
   const signIn = async () => {
-    try {
-      const signedInUser = await Auth.signIn(email, password);
-      setUser(signedInUser);
-      loadFiles();
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Sign in failed');
-    }
+    const authenticationDetails = new AuthenticationDetails({
+      Username: email,
+      Password: password
+    });
+
+    const cognitoUser = new CognitoUser({
+      Username: email,
+      Pool: userPool
+    });
+
+    cognitoUser.authenticateUser(authenticationDetails, {
+      onSuccess: (session) => {
+        setUser(cognitoUser);
+        const token = session.getIdToken().getJwtToken();
+        setJwtToken(token);
+        loadFiles(token);
+      },
+      onFailure: (err) => {
+        console.error(err);
+        alert(err.message || 'Sign in failed');
+      }
+    });
   };
 
-  const signOut = async () => {
-    await Auth.signOut();
+  const signOut = () => {
+    const currentUser = userPool.getCurrentUser();
+    if (currentUser) currentUser.signOut();
     setUser(null);
+    setJwtToken('');
     setFiles([]);
   };
 
-  const loadFiles = async () => {
+  const loadFiles = async (token = jwtToken) => {
     try {
       const data = await graphqlRequest(`
         query ListFiles {
@@ -112,7 +142,7 @@ function App() {
             owner
           }
         }
-      `);
+      `, {}, token);
 
       setFiles(data.listFiles || []);
     } catch (err) {
@@ -121,7 +151,7 @@ function App() {
   };
 
   const uploadFile = async () => {
-    if (!selectedFile || !user) {
+    if (!selectedFile || !jwtToken) {
       alert("Please choose a file first.");
       return;
     }
@@ -185,7 +215,7 @@ function App() {
         fileType: selectedFile.type || "application/octet-stream",
         fileSize: selectedFile.size,
         version: 1,
-        owner: user.username,
+        owner: email,
         sharedWith: []
       });
 
@@ -247,7 +277,7 @@ function App() {
         commentId: uuidv4(),
         fileId,
         content,
-        owner: user.username
+        owner: email
       });
 
       setCommentInputs((prev) => ({
