@@ -183,12 +183,12 @@ function App() {
 
       // 2. Upload directly to S3
       const s3UploadResponse = await fetch(uploadURL, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': selectedFile.type || "application/octet-stream"
-        },
-        body: selectedFile
-      });
+  method: 'PUT',
+  headers: {
+    'Content-Type': selectedFile.type || "application/octet-stream"
+  },
+  body: selectedFile
+});
 
       if (!s3UploadResponse.ok) {
         throw new Error("S3 upload failed");
